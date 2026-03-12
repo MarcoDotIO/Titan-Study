@@ -91,46 +91,81 @@ def pack_tokenized_documents(
 ) -> list[list[int]]:
     sequences: list[list[int]] = []
     buffer: list[int] = []
+    offset = 0  # track start of unconsumed buffer to avoid O(n) front-deletions
     for document_tokens in tokenized_documents:
         if not document_tokens:
             continue
         buffer.extend(document_tokens)
         buffer.append(eos_token_id)
-        while len(buffer) >= seq_len:
-            sequences.append(buffer[:seq_len])
-            del buffer[:seq_len]
+        while len(buffer) - offset >= seq_len:
+            sequences.append(buffer[offset : offset + seq_len])
+            offset += seq_len
             if max_sequences is not None and len(sequences) >= max_sequences:
                 return sequences
+    # Compact the buffer only once at the end to avoid repeated O(n) deletions
+    del buffer[:offset]
     return sequences
 
 
-def build_packed_sequences(
+def build_split_sequences(
     dataset_path: str | Path,
     tokenizer,
     *,
-    split: str,
     seq_len: int,
     max_docs: int | None = None,
-    max_sequences: int | None = None,
-) -> list[list[int]]:
+    max_sequences_train: int | None = None,
+    max_sequences_val: int | None = None,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Single-pass over the dataset, splitting records into train/val as we go."""
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer must have an EOS token id for sequence packing.")
 
-    def tokenized_documents() -> Iterator[list[int]]:
-        for record in iter_dolma_records(dataset_path, max_docs=max_docs):
-            if document_split(record.doc_id) != split:
-                continue
-            encoded = tokenizer(record.text, add_special_tokens=False, truncation=False)
-            token_ids = encoded["input_ids"]
-            if token_ids:
-                yield token_ids
+    eos = tokenizer.eos_token_id
+    train_seqs: list[list[int]] = []
+    val_seqs: list[list[int]] = []
+    train_buf: list[int] = []
+    val_buf: list[int] = []
+    train_offset = 0
+    val_offset = 0
 
-    return pack_tokenized_documents(
-        tokenized_documents(),
-        seq_len=seq_len,
-        eos_token_id=tokenizer.eos_token_id,
-        max_sequences=max_sequences,
-    )
+    train_done = False
+    val_done = False
+
+    for record in iter_dolma_records(dataset_path, max_docs=max_docs):
+        split = document_split(record.doc_id)
+        if split == "train" and train_done:
+            continue
+        if split == "val" and val_done:
+            continue
+
+        encoded = tokenizer(record.text, add_special_tokens=False, truncation=False)
+        token_ids = encoded["input_ids"]
+        if not token_ids:
+            continue
+
+        if split == "train":
+            train_buf.extend(token_ids)
+            train_buf.append(eos)
+            while len(train_buf) - train_offset >= seq_len:
+                train_seqs.append(train_buf[train_offset : train_offset + seq_len])
+                train_offset += seq_len
+                if max_sequences_train is not None and len(train_seqs) >= max_sequences_train:
+                    train_done = True
+                    break
+        else:
+            val_buf.extend(token_ids)
+            val_buf.append(eos)
+            while len(val_buf) - val_offset >= seq_len:
+                val_seqs.append(val_buf[val_offset : val_offset + seq_len])
+                val_offset += seq_len
+                if max_sequences_val is not None and len(val_seqs) >= max_sequences_val:
+                    val_done = True
+                    break
+
+        if train_done and val_done:
+            break
+
+    return train_seqs, val_seqs
 
 
 def load_datasets(
@@ -141,20 +176,12 @@ def load_datasets(
     max_docs: int | None = None,
     max_sequences: int | None = None,
 ) -> tuple[PackedSequenceDataset, PackedSequenceDataset]:
-    train_sequences = build_packed_sequences(
+    train_sequences, val_sequences = build_split_sequences(
         dataset_path,
         tokenizer,
-        split="train",
         seq_len=seq_len,
         max_docs=max_docs,
-        max_sequences=max_sequences,
-    )
-    val_sequences = build_packed_sequences(
-        dataset_path,
-        tokenizer,
-        split="val",
-        seq_len=seq_len,
-        max_docs=max_docs,
-        max_sequences=max_sequences,
+        max_sequences_train=max_sequences,
+        max_sequences_val=max_sequences,
     )
     return PackedSequenceDataset(train_sequences), PackedSequenceDataset(val_sequences)
