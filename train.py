@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-path",
         default=".dataset/books-0000.json.gz",
-        help="Path to a Dolma gzip NDJSON shard.",
+        help="Path to a Dolma gzip NDJSON shard or a directory of gzip shards.",
     )
     parser.add_argument("--tokenizer", default=None, help="Tokenizer path or model id.")
     parser.add_argument("--preset", default="paper_170m", choices=["tiny_test", "paper_170m"])

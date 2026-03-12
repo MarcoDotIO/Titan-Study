@@ -30,25 +30,50 @@ class PackedSequenceDataset(Dataset):
         return self._sequences[index]
 
 
+def resolve_dataset_files(dataset_path: str | Path) -> list[Path]:
+    path = Path(dataset_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset path does not exist: {path}")
+
+    if path.is_file():
+        return [path]
+
+    preferred_patterns = ("*.json.gz", "*.jsonl.gz", "*.ndjson.gz")
+    files: list[Path] = []
+    for pattern in preferred_patterns:
+        files.extend(path.rglob(pattern))
+
+    if not files:
+        files = list(path.rglob("*.gz"))
+
+    files = sorted(file_path for file_path in files if file_path.is_file())
+    if not files:
+        raise FileNotFoundError(
+            f"Dataset directory does not contain any gzip files: {path}"
+        )
+    return files
+
+
 def iter_dolma_records(dataset_path: str | Path, max_docs: int | None = None) -> Iterator[DolmaRecord]:
-    path = Path(dataset_path)
+    dataset_files = resolve_dataset_files(dataset_path)
     docs_seen = 0
-    with gzip.open(path, "rt", encoding="utf-8") as handle:
-        for line in handle:
-            raw = json.loads(line)
-            text = raw.get("text", "")
-            doc_id = raw.get("id")
-            if not doc_id or not text:
-                continue
-            yield DolmaRecord(
-                doc_id=doc_id,
-                text=text,
-                source=raw.get("source", ""),
-                metadata=raw.get("metadata", {}),
-            )
-            docs_seen += 1
-            if max_docs is not None and docs_seen >= max_docs:
-                return
+    for path in dataset_files:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                raw = json.loads(line)
+                text = raw.get("text", "")
+                doc_id = raw.get("id")
+                if not doc_id or not text:
+                    continue
+                yield DolmaRecord(
+                    doc_id=doc_id,
+                    text=text,
+                    source=raw.get("source", ""),
+                    metadata=raw.get("metadata", {}),
+                )
+                docs_seen += 1
+                if max_docs is not None and docs_seen >= max_docs:
+                    return
 
 
 def document_split(doc_id: str, validation_percent: int = 1) -> str:

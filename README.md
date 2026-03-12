@@ -39,7 +39,12 @@ pip install -r requirements.txt
 
 ## Dataset Expectations
 
-The training loader expects a Dolma gzip NDJSON shard where each record contains at least:
+The training loader accepts either:
+
+- a single Dolma gzip NDJSON shard, or
+- a directory containing many gzip shards
+
+Each record must contain at least:
 
 - `id`
 - `text`
@@ -50,7 +55,7 @@ The local sample shard used by tests is:
 .dataset/books-0000.json.gz
 ```
 
-Records are split by stable hash of `id` into a `99/1` train/validation partition. Documents are tokenized without truncation, joined with EOS separators, and packed into fixed-length windows.
+If you pass a directory, all matching gzip shards are discovered recursively in sorted order. Records are split by stable hash of `id` into a `99/1` train/validation partition. Documents are tokenized without truncation, joined with EOS separators, and packed into fixed-length windows.
 
 ## Tokenizer Requirements
 

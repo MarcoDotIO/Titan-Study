@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import json
 from pathlib import Path
 
 import torch
@@ -9,7 +11,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from infer import sample_next_token
 from titan_mac.checkpoint import load_checkpoint, save_checkpoint
 from titan_mac.config import build_model_config
-from titan_mac.data import document_split, iter_dolma_records, pack_tokenized_documents
+from titan_mac.data import (
+    document_split,
+    iter_dolma_records,
+    pack_tokenized_documents,
+    resolve_dataset_files,
+)
 from titan_mac.device import resolve_device
 from titan_mac.model import TitansMACLM
 
@@ -20,6 +27,39 @@ def test_iter_dolma_records_reads_expected_fields(dataset_path: Path) -> None:
     assert record.text
     assert record.source == "gutenberg"
     assert isinstance(record.metadata, dict)
+
+
+def test_iter_dolma_records_reads_bulk_gzip_directory(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "bulk"
+    dataset_dir.mkdir()
+
+    shard_a = dataset_dir / "books-0001.json.gz"
+    shard_b = dataset_dir / "books-0002.json.gz"
+    records = [
+        {
+            "id": "doc-a",
+            "text": "Alpha document",
+            "source": "gutenberg",
+            "metadata": {"shard": "a"},
+        },
+        {
+            "id": "doc-b",
+            "text": "Beta document",
+            "source": "gutenberg",
+            "metadata": {"shard": "b"},
+        },
+    ]
+
+    with gzip.open(shard_b, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(records[1]) + "\n")
+    with gzip.open(shard_a, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(records[0]) + "\n")
+
+    dataset_files = resolve_dataset_files(dataset_dir)
+    assert dataset_files == [shard_a, shard_b]
+
+    loaded = list(iter_dolma_records(dataset_dir))
+    assert [record.doc_id for record in loaded] == ["doc-a", "doc-b"]
 
 
 def test_document_split_is_deterministic() -> None:
