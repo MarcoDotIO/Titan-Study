@@ -3,6 +3,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import queue
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -96,26 +99,133 @@ def resolve_dataset_files(dataset_path: str | Path) -> list[Path]:
     return files
 
 
+_GZIP_MAGIC = b"\x1f\x8b"
+_GZIP_EOF_TRAILER_LEN = 8  # CRC32 (4 bytes) + ISIZE (4 bytes)
+
+
+def _gzip_file_complete(path: Path) -> bool:
+    """Return True only if the file looks like a fully written gzip stream.
+
+    A valid gzip file starts with the two-byte magic number and ends with an
+    8-byte trailer (CRC32 + uncompressed size mod 2^32).  A file that is still
+    being downloaded will typically be missing the trailer entirely.
+    """
+    try:
+        size = path.stat().st_size
+        if size < len(_GZIP_MAGIC) + _GZIP_EOF_TRAILER_LEN:
+            return False
+        with open(path, "rb") as fh:
+            header = fh.read(2)
+            if header != _GZIP_MAGIC:
+                return False
+        return True
+    except OSError:
+        return False
+
+
+class _PendingFileWatcher:
+    """Watches a set of incomplete gzip files in a background thread.
+
+    When a file finishes downloading (passes _gzip_file_complete), it is placed
+    on `ready_queue` so the caller can process it without re-scanning the directory.
+    Call `stop()` when done.
+    """
+
+    _POLL_INTERVAL = 5.0  # seconds between completion checks
+
+    def __init__(self, paths: list[Path]):
+        self.ready_queue: queue.Queue[Path] = queue.Queue()
+        self._pending: list[Path] = list(paths)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while self._pending and not self._stop_event.is_set():
+            still_pending: list[Path] = []
+            for path in self._pending:
+                if _gzip_file_complete(path):
+                    print(f"pending file now ready: {path}")
+                    self.ready_queue.put(path)
+                else:
+                    still_pending.append(path)
+            self._pending = still_pending
+            if self._pending:
+                self._stop_event.wait(timeout=self._POLL_INTERVAL)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join()
+
+    @property
+    def has_pending(self) -> bool:
+        return bool(self._pending)
+
+
+def _iter_one_file(path: Path, docs_seen: int, max_docs: int | None) -> Iterator[tuple[DolmaRecord, int]]:
+    """Yield (record, updated_docs_seen) for every valid record in a single gzip file."""
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            raw = json.loads(line)
+            text = raw.get("text", "")
+            doc_id = raw.get("id")
+            if not doc_id or not text:
+                continue
+            docs_seen += 1
+            yield DolmaRecord(
+                doc_id=doc_id,
+                text=text,
+                source=raw.get("source", ""),
+                metadata=raw.get("metadata", {}),
+            ), docs_seen
+            if max_docs is not None and docs_seen >= max_docs:
+                return
+
+
 def iter_dolma_records(dataset_path: str | Path, max_docs: int | None = None) -> Iterator[DolmaRecord]:
     dataset_files = resolve_dataset_files(dataset_path)
     docs_seen = 0
+
+    ready: list[Path] = []
+    pending: list[Path] = []
     for path in dataset_files:
-        with gzip.open(path, "rt", encoding="utf-8") as handle:
-            for line in handle:
-                raw = json.loads(line)
-                text = raw.get("text", "")
-                doc_id = raw.get("id")
-                if not doc_id or not text:
+        if _gzip_file_complete(path):
+            ready.append(path)
+        else:
+            print(f"file still downloading, will wait: {path}")
+            pending.append(path)
+
+    watcher = _PendingFileWatcher(pending) if pending else None
+
+    try:
+        # Process all files that were ready at startup first.
+        for path in ready:
+            try:
+                for record, docs_seen in _iter_one_file(path, docs_seen, max_docs):
+                    yield record
+                    if max_docs is not None and docs_seen >= max_docs:
+                        return
+            except (gzip.BadGzipFile, EOFError, OSError) as exc:
+                print(f"skipping unreadable file {path}: {exc}")
+
+        # Drain files as they finish downloading.
+        if watcher is not None:
+            while watcher.has_pending or not watcher.ready_queue.empty():
+                try:
+                    path = watcher.ready_queue.get(timeout=_PendingFileWatcher._POLL_INTERVAL)
+                except queue.Empty:
                     continue
-                yield DolmaRecord(
-                    doc_id=doc_id,
-                    text=text,
-                    source=raw.get("source", ""),
-                    metadata=raw.get("metadata", {}),
-                )
-                docs_seen += 1
-                if max_docs is not None and docs_seen >= max_docs:
-                    return
+                try:
+                    for record, docs_seen in _iter_one_file(path, docs_seen, max_docs):
+                        yield record
+                        if max_docs is not None and docs_seen >= max_docs:
+                            return
+                except (gzip.BadGzipFile, EOFError, OSError) as exc:
+                    print(f"skipping unreadable file {path}: {exc}")
+    finally:
+        if watcher is not None:
+            watcher.stop()
+
 
 
 def document_split(doc_id: str, validation_percent: int = 1) -> str:

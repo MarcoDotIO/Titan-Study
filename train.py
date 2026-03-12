@@ -285,9 +285,15 @@ def main() -> None:
             elapsed = time.time() - started
             tokens_per_step = args.batch_size * model_config.max_seq_len * args.grad_accum_steps
             tokens_per_sec = tokens_per_step / max(elapsed, 1e-6)
-            epoch_size = max(len(train_loader), 1)
-            epoch = ((batches_seen - 1) // epoch_size) + 1
-            epoch_iteration = ((batches_seen - 1) % epoch_size) + 1
+            try:
+                epoch_size = max(len(train_loader), 1)
+                epoch = ((batches_seen - 1) // epoch_size) + 1
+                epoch_iteration = ((batches_seen - 1) % epoch_size) + 1
+            except TypeError:
+                # IterableDataset has no len(); epoch tracking is not meaningful
+                epoch_size = None
+                epoch = None
+                epoch_iteration = None
             learning_rate = scheduler.get_last_lr()[0]
             print(
                 f"step={finished_step} "
@@ -305,9 +311,11 @@ def main() -> None:
                 "train/learning_rate": learning_rate,
                 "train/grad_norm": grad_norm,
                 "train/tokens_per_sec": tokens_per_sec,
-                "train/epoch": epoch,
-                "train/epoch_iteration": epoch_iteration,
             }
+            if epoch is not None:
+                wandb_metrics["train/epoch"] = epoch
+            if epoch_iteration is not None:
+                wandb_metrics["train/epoch_iteration"] = epoch_iteration
 
             if args.eval_every > 0 and finished_step % args.eval_every == 0:
                 eval_metrics = evaluate(model, val_loader, device)
