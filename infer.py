@@ -48,12 +48,26 @@ def filter_logits(logits: torch.Tensor, top_k: int, top_p: float) -> torch.Tenso
     return filtered
 
 
+def sanitize_logits(logits: torch.Tensor) -> torch.Tensor:
+    sanitized = torch.nan_to_num(logits.float(), nan=0.0, posinf=1e4, neginf=-1e4)
+    max_values = sanitized.max(dim=-1, keepdim=True).values
+    return sanitized - max_values
+
+
 def sample_next_token(logits: torch.Tensor, temperature: float, top_k: int, top_p: float) -> torch.Tensor:
+    logits = sanitize_logits(logits)
     if temperature <= 0:
         return torch.argmax(logits, dim=-1, keepdim=True)
     logits = logits / temperature
     logits = filter_logits(logits, top_k=top_k, top_p=top_p)
+    if not torch.isfinite(logits).any(dim=-1).all():
+        return torch.argmax(sanitize_logits(logits), dim=-1, keepdim=True)
     probs = torch.softmax(logits, dim=-1)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
+    total = probs.sum(dim=-1, keepdim=True)
+    if (total <= 0).any():
+        return torch.argmax(sanitize_logits(logits), dim=-1, keepdim=True)
+    probs = probs / total
     return torch.multinomial(probs, num_samples=1)
 
 

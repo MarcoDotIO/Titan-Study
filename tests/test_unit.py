@@ -6,6 +6,7 @@ import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+from infer import sample_next_token
 from titan_mac.checkpoint import load_checkpoint, save_checkpoint
 from titan_mac.config import build_model_config
 from titan_mac.data import document_split, iter_dolma_records, pack_tokenized_documents
@@ -74,3 +75,11 @@ def test_checkpoint_round_trip_preserves_step(tmp_path: Path) -> None:
     assert payload["step"] == 7
     assert payload["tokenizer_ref"] == "tests-tokenizer"
     assert payload["model_config"]["max_seq_len"] == config.max_seq_len
+    assert not (tmp_path / "round_trip.pt.tmp").exists()
+
+
+def test_sample_next_token_handles_non_finite_logits() -> None:
+    logits = torch.tensor([[float("nan"), float("inf"), -1.0, 0.5]])
+    next_token = sample_next_token(logits, temperature=0.8, top_k=2, top_p=0.9)
+    assert next_token.shape == (1, 1)
+    assert int(next_token.item()) in {1, 3}

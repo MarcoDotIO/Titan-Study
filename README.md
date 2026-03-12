@@ -11,6 +11,7 @@ The implementation follows the paper at the architecture level, but it uses a si
 
 - `train.py`: training CLI
 - `infer.py`: checkpoint loading and text generation CLI
+- `make_test_tokenizer.py`: creates a tiny local tokenizer for smoke tests
 - `titan_mac/`: shared package code for configs, data loading, device selection, model code, and checkpointing
 - `tests/test_unit.py`: unit coverage for parsing, packing, devices, model stability, and checkpoints
 - `tests/test_e2e.py`: end-to-end smoke test using the real local Dolma shard and a tiny local tokenizer fixture
@@ -63,16 +64,30 @@ If the tokenizer is gated on Hugging Face, authenticate first or point `--tokeni
 
 Tests do not depend on gated assets. They create a tiny local tokenizer fixture at runtime.
 
+If you want to do a local `tiny_test` smoke run without using a gated tokenizer, create a tiny local tokenizer directory first:
+
+```bash
+python make_test_tokenizer.py --out-dir local_test_tokenizer
+```
+
 ## Training
 
 ### Local smoke run on Apple Silicon
+
+First create a tiny local tokenizer:
+
+```bash
+python make_test_tokenizer.py --out-dir local_test_tokenizer
+```
+
+Then run the smoke test:
 
 ```bash
 python train.py \
   --preset tiny_test \
   --device mps \
   --dataset-path .dataset/books-0000.json.gz \
-  --tokenizer /path/to/local/tokenizer \
+  --tokenizer ./local_test_tokenizer \
   --max-docs 512 \
   --max-sequences 8 \
   --max-steps 2 \

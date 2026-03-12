@@ -11,6 +11,18 @@ def unwrap_model(model):
     return getattr(model, "_orig_mod", model)
 
 
+def _to_cpu(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().to("cpu")
+    if isinstance(value, dict):
+        return {key: _to_cpu(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_to_cpu(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_to_cpu(item) for item in value)
+    return value
+
+
 def save_checkpoint(
     path: str | Path,
     *,
@@ -27,16 +39,22 @@ def save_checkpoint(
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     base_model = unwrap_model(model)
     payload = {
-        "model_state": base_model.state_dict(),
-        "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
+        "model_state": _to_cpu(base_model.state_dict()),
+        "optimizer_state": _to_cpu(optimizer.state_dict()) if optimizer is not None else None,
         "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
-        "scaler_state": scaler.state_dict() if scaler is not None else None,
+        "scaler_state": _to_cpu(scaler.state_dict()) if scaler is not None else None,
         "model_config": model_config.to_dict(),
         "train_args": train_args,
         "tokenizer_ref": tokenizer_ref,
         "step": step,
     }
-    torch.save(payload, checkpoint_path)
+    tmp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.tmp")
+    try:
+        torch.save(payload, tmp_path)
+        tmp_path.replace(checkpoint_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
     return checkpoint_path
 
 

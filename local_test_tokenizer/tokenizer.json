@@ -1,0 +1,101 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "<pad>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "<unk>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 2,
+      "content": "<bos>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 3,
+      "content": "<eos>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "<pad>": 0,
+      "<unk>": 1,
+      "<bos>": 2,
+      "<eos>": 3,
+      ".": 4,
+      "and": 5,
+      "documents": 6,
+      "CUDA": 7,
+      "Context": 8,
+      "Dolma": 9,
+      "Gutenberg": 10,
+      "MPS": 11,
+      "Memory": 12,
+      "Project": 13,
+      "PyTorch": 14,
+      "This": 15,
+      "Titans": 16,
+      "a": 17,
+      "as": 18,
+      "books": 19,
+      "code": 20,
+      "contains": 21,
+      "for": 22,
+      "from": 23,
+      "is": 24,
+      "keeps": 25,
+      "learn": 26,
+      "local": 27,
+      "long": 28,
+      "memorize": 29,
+      "memory": 30,
+      "on": 31,
+      "one": 32,
+      "only": 33,
+      "path": 34,
+      "persistent": 35,
+      "prefix": 36,
+      "retrieved": 37,
+      "share": 38,
+      "should": 39,
+      "smoke": 40,
+      "tests": 41,
+      "to": 42,
+      "tokenizer": 43,
+      "tokens": 44,
+      "training": 45
+    },
+    "unk_token": "<unk>"
+  }
+}
