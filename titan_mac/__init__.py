@@ -2,6 +2,7 @@ from .checkpoint import load_checkpoint, save_checkpoint
 from .config import MODEL_PRESETS, ModelConfig, build_model_config
 from .data import (
     PackedSequenceDataset,
+    StreamingPackedDataset,
     build_split_sequences,
     document_split,
     iter_dolma_records,
@@ -16,6 +17,7 @@ __all__ = [
     "ModelConfig",
     "ModelState",
     "PackedSequenceDataset",
+    "StreamingPackedDataset",
     "TitansMACLM",
     "TitansOutput",
     "autocast_context",

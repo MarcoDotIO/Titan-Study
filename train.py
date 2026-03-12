@@ -20,7 +20,7 @@ from titan_mac.checkpoint import (
     unwrap_model,
 )
 from titan_mac.config import build_model_config
-from titan_mac.data import load_datasets
+from titan_mac.data import StreamingPackedDataset, load_datasets
 from titan_mac.device import autocast_context, resolve_device, resolve_dtype, use_grad_scaler
 from titan_mac.model import TitansMACLM
 from titan_mac.tokenization import load_tokenizer
@@ -201,13 +201,17 @@ def main() -> None:
         max_docs=args.max_docs,
         max_sequences=args.max_sequences,
     )
-    if len(train_dataset) == 0:
+    # StreamingPackedDataset has no __len__; treat it as always non-empty.
+    # For eager PackedSequenceDataset we can still check.
+    if not isinstance(train_dataset, StreamingPackedDataset) and len(train_dataset) == 0:
         raise RuntimeError("Training dataset is empty. Increase --max-docs or check the tokenizer.")
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+    # shuffle=True is incompatible with IterableDataset; streaming datasets handle order via file iteration.
+    train_shuffle = not isinstance(train_dataset, StreamingPackedDataset)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=train_shuffle, drop_last=False)
     val_loader = (
         DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
-        if len(val_dataset) > 0
+        if isinstance(val_dataset, StreamingPackedDataset) or len(val_dataset) > 0
         else None
     )
 

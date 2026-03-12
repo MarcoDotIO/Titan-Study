@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,48 @@ class PackedSequenceDataset(Dataset):
 
     def __getitem__(self, index: int) -> torch.Tensor:
         return self._sequences[index]
+
+
+class StreamingPackedDataset(IterableDataset):
+    """Streams sequences from disk, tokenizing on the fly. Never loads the full dataset into RAM."""
+
+    def __init__(
+        self,
+        dataset_path: str | Path,
+        tokenizer,
+        *,
+        split: str,
+        seq_len: int,
+        max_docs: int | None = None,
+        max_sequences: int | None = None,
+    ):
+        self._dataset_path = dataset_path
+        self._tokenizer = tokenizer
+        self._split = split
+        self._seq_len = seq_len
+        self._max_docs = max_docs
+        self._max_sequences = max_sequences
+
+    def __iter__(self) -> Iterator[torch.Tensor]:
+        eos = self._tokenizer.eos_token_id
+        buf: list[int] = []
+        sequences_yielded = 0
+
+        for record in iter_dolma_records(self._dataset_path, max_docs=self._max_docs):
+            if document_split(record.doc_id) != self._split:
+                continue
+            encoded = self._tokenizer(record.text, add_special_tokens=False, truncation=False)
+            token_ids = encoded["input_ids"]
+            if not token_ids:
+                continue
+            buf.extend(token_ids)
+            buf.append(eos)
+            while len(buf) >= self._seq_len:
+                yield torch.tensor(buf[: self._seq_len], dtype=torch.long)
+                del buf[: self._seq_len]
+                sequences_yielded += 1
+                if self._max_sequences is not None and sequences_yielded >= self._max_sequences:
+                    return
 
 
 def resolve_dataset_files(dataset_path: str | Path) -> list[Path]:
@@ -91,7 +133,7 @@ def pack_tokenized_documents(
 ) -> list[list[int]]:
     sequences: list[list[int]] = []
     buffer: list[int] = []
-    offset = 0  # track start of unconsumed buffer to avoid O(n) front-deletions
+    offset = 0
     for document_tokens in tokenized_documents:
         if not document_tokens:
             continue
@@ -102,7 +144,6 @@ def pack_tokenized_documents(
             offset += seq_len
             if max_sequences is not None and len(sequences) >= max_sequences:
                 return sequences
-    # Compact the buffer only once at the end to avoid repeated O(n) deletions
     del buffer[:offset]
     return sequences
 
@@ -116,7 +157,7 @@ def build_split_sequences(
     max_sequences_train: int | None = None,
     max_sequences_val: int | None = None,
 ) -> tuple[list[list[int]], list[list[int]]]:
-    """Single-pass over the dataset, splitting records into train/val as we go."""
+    """Single-pass eager load. Only use when max_sequences is small enough to fit in RAM."""
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer must have an EOS token id for sequence packing.")
 
@@ -127,7 +168,6 @@ def build_split_sequences(
     val_buf: list[int] = []
     train_offset = 0
     val_offset = 0
-
     train_done = False
     val_done = False
 
@@ -175,13 +215,24 @@ def load_datasets(
     seq_len: int,
     max_docs: int | None = None,
     max_sequences: int | None = None,
-) -> tuple[PackedSequenceDataset, PackedSequenceDataset]:
-    train_sequences, val_sequences = build_split_sequences(
-        dataset_path,
-        tokenizer,
-        seq_len=seq_len,
-        max_docs=max_docs,
-        max_sequences_train=max_sequences,
-        max_sequences_val=max_sequences,
+) -> tuple[StreamingPackedDataset | PackedSequenceDataset, StreamingPackedDataset | PackedSequenceDataset]:
+    # If max_sequences is set, the dataset is small enough to load eagerly (original behaviour).
+    # Otherwise stream from disk to avoid loading the full dataset into RAM.
+    if max_sequences is not None:
+        train_sequences, val_sequences = build_split_sequences(
+            dataset_path,
+            tokenizer,
+            seq_len=seq_len,
+            max_docs=max_docs,
+            max_sequences_train=max_sequences,
+            max_sequences_val=max_sequences,
+        )
+        return PackedSequenceDataset(train_sequences), PackedSequenceDataset(val_sequences)
+
+    train_dataset = StreamingPackedDataset(
+        dataset_path, tokenizer, split="train", seq_len=seq_len, max_docs=max_docs
     )
-    return PackedSequenceDataset(train_sequences), PackedSequenceDataset(val_sequences)
+    val_dataset = StreamingPackedDataset(
+        dataset_path, tokenizer, split="val", seq_len=seq_len, max_docs=max_docs
+    )
+    return train_dataset, val_dataset
