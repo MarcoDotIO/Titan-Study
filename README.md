@@ -12,6 +12,7 @@ The implementation follows the paper at the architecture level, but it uses a si
 - `train.py`: training CLI
 - `infer.py`: checkpoint loading and text generation CLI
 - `make_test_tokenizer.py`: creates a tiny local tokenizer for smoke tests
+- `example.env`: template for local environment variables, including Weights & Biases credentials
 - `titan_mac/`: shared package code for configs, data loading, device selection, model code, and checkpointing
 - `tests/test_unit.py`: unit coverage for parsing, packing, devices, model stability, and checkpoints
 - `tests/test_e2e.py`: end-to-end smoke test using the real local Dolma shard and a tiny local tokenizer fixture
@@ -36,6 +37,25 @@ pip install -r requirements.txt
 ```
 
 `requirements.txt` includes the official PyTorch CUDA 12.8 wheel index, so Linux installs resolve to `torch==2.10.0+cu128`.
+
+## Weights & Biases Setup
+
+Copy the template and fill in your API key:
+
+```bash
+cp example.env .env
+```
+
+Required environment variable:
+
+- `WANDB_API_KEY`
+
+Optional environment variables:
+
+- `WANDB_PROJECT`
+- `WANDB_ENTITY`
+
+The training script loads `.env` from the repository root automatically. Weights & Biases logging is only enabled when you pass `--wandb`.
 
 ## Dataset Expectations
 
@@ -98,6 +118,7 @@ python train.py \
   --max-steps 2 \
   --eval-every 1 \
   --save-every 1 \
+  --wandb \
   --out-dir outputs/tiny
 ```
 
@@ -116,6 +137,7 @@ python train.py \
   --max-steps 1000 \
   --eval-every 50 \
   --save-every 50 \
+  --wandb \
   --out-dir outputs/paper_170m
 ```
 
@@ -140,6 +162,24 @@ Checkpoints store:
 - train CLI args
 - tokenizer reference
 - global step
+
+## Weights & Biases Metrics
+
+When `--wandb` is enabled, the training run logs:
+
+- `train/loss`
+- `train/accuracy`
+- `train/learning_rate`
+- `train/grad_norm`
+- `train/tokens_per_sec`
+- `train/epoch`
+- `train/epoch_iteration`
+- `eval/loss`
+- `eval/score`
+- `eval/accuracy`
+- `eval/perplexity` when finite
+
+The run also uses `wandb.watch(...)` so gradient traces are visible in the dashboard.
 
 ## Inference
 

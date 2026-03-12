@@ -5,3 +5,5 @@ transformers==4.57.1
 tokenizers==0.22.1
 sentencepiece==0.2.1
 pytest==8.4.2
+python-dotenv==1.0.1
+wandb==0.18.7

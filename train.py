@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import itertools
+from dataclasses import dataclass
 import math
 import os
 import time
 from pathlib import Path
 
 import torch
+from dotenv import load_dotenv
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -25,6 +26,12 @@ from titan_mac.model import TitansMACLM
 from titan_mac.tokenization import load_tokenizer
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+@dataclass(frozen=True)
+class EvaluationMetrics:
+    loss: float
+    accuracy: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,6 +63,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--max-docs", type=int, default=None)
     parser.add_argument("--max-sequences", type=int, default=None)
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
+    parser.add_argument("--wandb-project", default=None, help="Override WANDB_PROJECT for this run.")
+    parser.add_argument("--wandb-run-name", default=None, help="Optional Weights & Biases run name.")
     return parser.parse_args()
 
 
@@ -65,24 +75,84 @@ def cycle_loader(loader: DataLoader):
             yield batch
 
 
-def evaluate(model: TitansMACLM, loader: DataLoader | None, device: torch.device) -> float | None:
+def token_accuracy_counts(logits: torch.Tensor, labels: torch.Tensor) -> tuple[int, int]:
+    if logits.size(1) < 2:
+        return 0, 0
+    shifted_logits = logits[:, :-1, :]
+    shifted_labels = labels[:, 1:]
+    predictions = shifted_logits.argmax(dim=-1)
+    correct = (predictions == shifted_labels).sum().item()
+    total = shifted_labels.numel()
+    return int(correct), int(total)
+
+
+def gradient_l2_norm(model: TitansMACLM) -> float:
+    total = 0.0
+    for parameter in model.parameters():
+        if parameter.grad is None:
+            continue
+        grad = parameter.grad.detach().float()
+        total += grad.pow(2).sum().item()
+    return total ** 0.5
+
+
+def maybe_init_wandb(
+    args: argparse.Namespace,
+    *,
+    model: TitansMACLM,
+    out_dir: Path,
+):
+    if not args.wandb:
+        return None
+
+    api_key = os.getenv("WANDB_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "--wandb was requested but WANDB_API_KEY is not set. Add it to .env or the shell environment."
+        )
+
+    try:
+        import wandb
+    except ImportError as exc:  # pragma: no cover - dependency is exercised through integration
+        raise RuntimeError("wandb is not installed. Install the project requirements first.") from exc
+
+    project = args.wandb_project or os.getenv("WANDB_PROJECT", "titan-mac")
+    entity = os.getenv("WANDB_ENTITY") or None
+    run = wandb.init(
+        project=project,
+        entity=entity,
+        name=args.wandb_run_name,
+        dir=str(out_dir),
+        resume="allow",
+    )
+    wandb.watch(unwrap_model(model), log="gradients", log_freq=10)
+    return run
+
+
+def evaluate(model: TitansMACLM, loader: DataLoader | None, device: torch.device) -> EvaluationMetrics | None:
     if loader is None:
         return None
 
     was_training = model.training
     model.eval()
     losses = []
+    total_correct = 0
+    total_tokens = 0
     with torch.enable_grad():
         for batch in loader:
             batch = batch.to(device)
             output = model(batch, labels=batch, reset_memory=True)
             if output.loss is not None:
                 losses.append(output.loss.item())
+            correct, total = token_accuracy_counts(output.logits.detach(), batch)
+            total_correct += correct
+            total_tokens += total
     if was_training:
         model.train()
     if not losses:
         return None
-    return sum(losses) / len(losses)
+    accuracy = total_correct / max(total_tokens, 1)
+    return EvaluationMetrics(loss=sum(losses) / len(losses), accuracy=accuracy)
 
 
 def maybe_compile(model: TitansMACLM, enabled: bool, device: torch.device) -> TitansMACLM:
@@ -103,6 +173,7 @@ def maybe_compile(model: TitansMACLM, enabled: bool, device: torch.device) -> Ti
 
 def main() -> None:
     args = parse_args()
+    load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"))
     torch.manual_seed(1337)
 
     device = resolve_device(args.device)
@@ -167,90 +238,140 @@ def main() -> None:
     model.train()
     train_batches = cycle_loader(train_loader)
     started = time.time()
+    batches_seen = start_step * args.grad_accum_steps
+    wandb_run = maybe_init_wandb(args, model=model, out_dir=out_dir)
 
-    for step in range(start_step, args.max_steps):
-        optimizer.zero_grad(set_to_none=True)
-        micro_losses = []
-        for _ in range(args.grad_accum_steps):
-            batch = next(train_batches).to(device)
-            with autocast_context(device, dtype):
-                output = model(batch, labels=batch, reset_memory=True)
-                if output.loss is None:
-                    raise RuntimeError("Model did not return a loss during training.")
-                loss = output.loss / args.grad_accum_steps
-            micro_losses.append(loss.detach().item() * args.grad_accum_steps)
+    try:
+        for step in range(start_step, args.max_steps):
+            optimizer.zero_grad(set_to_none=True)
+            micro_losses = []
+            train_correct = 0
+            train_tokens = 0
+            for _ in range(args.grad_accum_steps):
+                batch = next(train_batches).to(device)
+                batches_seen += 1
+                with autocast_context(device, dtype):
+                    output = model(batch, labels=batch, reset_memory=True)
+                    if output.loss is None:
+                        raise RuntimeError("Model did not return a loss during training.")
+                    loss = output.loss / args.grad_accum_steps
+                micro_losses.append(loss.detach().item() * args.grad_accum_steps)
+                correct, total = token_accuracy_counts(output.logits.detach(), batch)
+                train_correct += correct
+                train_tokens += total
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+
             if scaler is not None:
-                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+            grad_norm = gradient_l2_norm(unwrap_model(model))
+
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                loss.backward()
+                optimizer.step()
+            scheduler.step()
 
-        if scaler is not None:
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
-        scheduler.step()
+            finished_step = step + 1
+            avg_loss = sum(micro_losses) / len(micro_losses)
+            train_accuracy = train_correct / max(train_tokens, 1)
+            elapsed = time.time() - started
+            tokens_per_step = args.batch_size * model_config.max_seq_len * args.grad_accum_steps
+            tokens_per_sec = tokens_per_step / max(elapsed, 1e-6)
+            epoch_size = max(len(train_loader), 1)
+            epoch = ((batches_seen - 1) // epoch_size) + 1
+            epoch_iteration = ((batches_seen - 1) % epoch_size) + 1
+            learning_rate = scheduler.get_last_lr()[0]
+            print(
+                f"step={finished_step} "
+                f"loss={avg_loss:.4f} "
+                f"accuracy={train_accuracy:.4f} "
+                f"lr={learning_rate:.6f} "
+                f"grad_norm={grad_norm:.4f} "
+                f"tokens_per_sec={tokens_per_sec:.2f}"
+            )
+            started = time.time()
 
-        finished_step = step + 1
-        avg_loss = sum(micro_losses) / len(micro_losses)
-        elapsed = time.time() - started
-        tokens_per_step = args.batch_size * model_config.max_seq_len * args.grad_accum_steps
-        print(
-            f"step={finished_step} "
-            f"loss={avg_loss:.4f} "
-            f"lr={scheduler.get_last_lr()[0]:.6f} "
-            f"tokens_per_sec={tokens_per_step / max(elapsed, 1e-6):.2f}"
+            wandb_metrics = {
+                "train/loss": avg_loss,
+                "train/accuracy": train_accuracy,
+                "train/learning_rate": learning_rate,
+                "train/grad_norm": grad_norm,
+                "train/tokens_per_sec": tokens_per_sec,
+                "train/epoch": epoch,
+                "train/epoch_iteration": epoch_iteration,
+            }
+
+            if args.eval_every > 0 and finished_step % args.eval_every == 0:
+                eval_metrics = evaluate(model, val_loader, device)
+                if eval_metrics is None:
+                    print("eval=skipped reason=no_validation_sequences")
+                else:
+                    perplexity = math.exp(eval_metrics.loss) if eval_metrics.loss < 20 else float("inf")
+                    print(
+                        f"eval_loss={eval_metrics.loss:.4f} "
+                        f"eval_accuracy={eval_metrics.accuracy:.4f} "
+                        f"perplexity={perplexity:.4f}"
+                    )
+                    wandb_metrics.update(
+                        {
+                            "eval/loss": eval_metrics.loss,
+                            "eval/score": eval_metrics.loss,
+                            "eval/accuracy": eval_metrics.accuracy,
+                        }
+                    )
+                    if math.isfinite(perplexity):
+                        wandb_metrics["eval/perplexity"] = perplexity
+
+            if wandb_run is not None:
+                wandb_run.log(wandb_metrics, step=finished_step)
+
+            if args.save_every > 0 and finished_step % args.save_every == 0:
+                step_checkpoint = out_dir / f"step_{finished_step:06d}.pt"
+                latest_checkpoint = out_dir / "latest.pt"
+                save_checkpoint(
+                    step_checkpoint,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    model_config=model_config,
+                    train_args=vars(args),
+                    tokenizer_ref=tokenizer_ref,
+                    step=finished_step,
+                )
+                save_checkpoint(
+                    latest_checkpoint,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    model_config=model_config,
+                    train_args=vars(args),
+                    tokenizer_ref=tokenizer_ref,
+                    step=finished_step,
+                )
+                print(f"checkpoint={latest_checkpoint}")
+
+        final_checkpoint = out_dir / "latest.pt"
+        save_checkpoint(
+            final_checkpoint,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            model_config=model_config,
+            train_args=vars(args),
+            tokenizer_ref=tokenizer_ref,
+            step=args.max_steps,
         )
-        started = time.time()
-
-        if args.eval_every > 0 and finished_step % args.eval_every == 0:
-            val_loss = evaluate(model, val_loader, device)
-            if val_loss is None:
-                print("eval=skipped reason=no_validation_sequences")
-            else:
-                perplexity = math.exp(val_loss) if val_loss < 20 else float("inf")
-                print(f"eval_loss={val_loss:.4f} perplexity={perplexity:.4f}")
-
-        if args.save_every > 0 and finished_step % args.save_every == 0:
-            step_checkpoint = out_dir / f"step_{finished_step:06d}.pt"
-            latest_checkpoint = out_dir / "latest.pt"
-            save_checkpoint(
-                step_checkpoint,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                model_config=model_config,
-                train_args=vars(args),
-                tokenizer_ref=tokenizer_ref,
-                step=finished_step,
-            )
-            save_checkpoint(
-                latest_checkpoint,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                model_config=model_config,
-                train_args=vars(args),
-                tokenizer_ref=tokenizer_ref,
-                step=finished_step,
-            )
-            print(f"checkpoint={latest_checkpoint}")
-
-    final_checkpoint = out_dir / "latest.pt"
-    save_checkpoint(
-        final_checkpoint,
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        scaler=scaler,
-        model_config=model_config,
-        train_args=vars(args),
-        tokenizer_ref=tokenizer_ref,
-        step=args.max_steps,
-    )
-    print(f"training_complete checkpoint={final_checkpoint}")
+        print(f"training_complete checkpoint={final_checkpoint}")
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 if __name__ == "__main__":
