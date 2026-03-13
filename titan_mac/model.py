@@ -159,9 +159,9 @@ class MACBlock(nn.Module):
             layer_weight = (layer.weight * 0.01).to(device=device, dtype=dtype).unsqueeze(0).expand(
                 batch_size, -1, -1
             )
-            layer_bias = torch.zeros_like(layer.bias).to(device=device, dtype=dtype).unsqueeze(0).expand(
-                batch_size, -1
-            )
+            layer_bias = (layer.bias - layer.bias.detach()).to(device=device, dtype=dtype).unsqueeze(
+                0
+            ).expand(batch_size, -1)
             weights.append(layer_weight)
             biases.append(layer_bias)
             momentum_weights.append(torch.zeros_like(layer_weight))

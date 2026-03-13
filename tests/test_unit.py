@@ -94,6 +94,18 @@ def test_mac_model_forward_backward_stays_finite() -> None:
     assert total_grad > 0.0
 
 
+def test_mac_init_state_fast_params_require_grad() -> None:
+    config = build_model_config("tiny_test", vocab_size=128)
+    model = TitansMACLM(config)
+    state = model.init_memory_state(batch_size=2, device=torch.device("cpu"), dtype=torch.float32)
+
+    for layer_state in state.layer_states:
+        assert all(tensor.requires_grad for tensor in layer_state.weights)
+        assert all(tensor.requires_grad for tensor in layer_state.biases)
+        assert all(not tensor.requires_grad for tensor in layer_state.momentum_weights)
+        assert all(not tensor.requires_grad for tensor in layer_state.momentum_biases)
+
+
 def test_checkpoint_round_trip_preserves_step(tmp_path: Path) -> None:
     config = build_model_config("tiny_test", vocab_size=64)
     model = TitansMACLM(config)
