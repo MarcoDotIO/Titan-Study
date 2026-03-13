@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--lr", type=float, default=4e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
-    parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--grad-clip", type=float, default=1.0, help="Max gradient norm (0 to disable).")
     parser.add_argument("--eval-every", type=int, default=10)
     parser.add_argument("--save-every", type=int, default=10)
     parser.add_argument("--out-dir", default="outputs")
@@ -270,6 +270,8 @@ def main() -> None:
 
             if scaler is not None:
                 scaler.unscale_(optimizer)
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
             grad_norm = gradient_l2_norm(unwrap_model(model))
 
             if scaler is not None:

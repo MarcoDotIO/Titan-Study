@@ -246,6 +246,12 @@ class MACBlock(nn.Module):
             retain_graph=self.training,
         )
 
+        # Clip inner gradients to prevent fast-weight explosion.
+        grad_tensors = torch.stack([g.norm() for g in grads])
+        total_norm = grad_tensors.norm()
+        clip_coef = (1.0 / (total_norm + 1e-6)).clamp(max=1.0)
+        grads = tuple(g * clip_coef for g in grads)
+
         alpha_w = alpha.unsqueeze(-1)
         eta_w = eta.unsqueeze(-1)
         theta_w = theta.unsqueeze(-1)
