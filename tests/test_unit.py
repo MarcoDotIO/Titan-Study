@@ -4,6 +4,8 @@ import gzip
 import json
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -13,8 +15,10 @@ from titan_mac.checkpoint import load_checkpoint, save_checkpoint
 from titan_mac.config import build_model_config
 from titan_mac.data import (
     document_split,
+    iter_fineweb_records,
     iter_dolma_records,
     pack_tokenized_documents,
+    resolve_fineweb_files,
     resolve_dataset_files,
 )
 from titan_mac.device import resolve_device
@@ -60,6 +64,39 @@ def test_iter_dolma_records_reads_bulk_gzip_directory(tmp_path: Path) -> None:
 
     loaded = list(iter_dolma_records(dataset_dir))
     assert [record.doc_id for record in loaded] == ["doc-a", "doc-b"]
+
+
+def test_iter_fineweb_records_reads_parquet_directory(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "fineweb"
+    dataset_dir.mkdir()
+
+    shard_a = dataset_dir / "part-0001.parquet"
+    shard_b = dataset_dir / "part-0002.parquet"
+    table_a = pa.table(
+        {
+            "text": ["Alpha educational text."],
+            "id": ["row-a"],
+            "dump": ["CC-MAIN-2024-10"],
+            "url": ["https://example.com/a"],
+        }
+    )
+    table_b = pa.table(
+        {
+            "text": ["Beta educational text."],
+            "id": ["row-b"],
+            "dump": ["CC-MAIN-2024-18"],
+            "url": ["https://example.com/b"],
+        }
+    )
+    pq.write_table(table_b, shard_b)
+    pq.write_table(table_a, shard_a)
+
+    dataset_files = resolve_fineweb_files(dataset_dir)
+    assert dataset_files == [shard_a, shard_b]
+
+    loaded = list(iter_fineweb_records(dataset_dir))
+    assert [record.doc_id for record in loaded] == ["row-a", "row-b"]
+    assert [record.source for record in loaded] == ["CC-MAIN-2024-10", "CC-MAIN-2024-18"]
 
 
 def test_document_split_is_deterministic() -> None:

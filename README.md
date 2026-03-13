@@ -1,6 +1,6 @@
 # Titans MAC Training Scaffold
 
-This repository is a PyTorch scaffold for training a paper-shaped Titans Memory-as-Context (MAC) language model on a local Dolma `v1.6-sample` shard. It is designed for two workflows:
+This repository is a PyTorch scaffold for training a paper-shaped Titans Memory-as-Context (MAC) language model on local Dolma or FineWeb-Edu data. It is designed for two workflows:
 
 1. local smoke tests on Apple Silicon with `mps`, and
 2. larger single-device runs on a Linux H100 box with CUDA 12.8.
@@ -61,13 +61,14 @@ The training script loads `.env` from the repository root automatically. Weights
 
 The training loader accepts either:
 
-- a single Dolma gzip NDJSON shard, or
-- a directory containing many gzip shards
+- `--dataset dolma`: a single Dolma gzip NDJSON shard or a directory containing many gzip shards
+- `--dataset fineweb`: a single FineWeb parquet shard or a directory containing many parquet shards
 
 Each record must contain at least:
 
-- `id`
 - `text`
+
+Dolma records should also contain `id`. FineWeb rows can omit `id`; the loader will derive a stable document id when needed.
 
 The local sample shard used by tests is:
 
@@ -75,7 +76,11 @@ The local sample shard used by tests is:
 .dataset/books-0000.json.gz
 ```
 
-If you pass a directory, all matching gzip shards are discovered recursively in sorted order. Records are split by stable hash of `id` into a `99/1` train/validation partition. Documents are tokenized without truncation, joined with EOS separators, and packed into fixed-length windows.
+For Dolma, all matching gzip shards are discovered recursively in sorted order.
+
+For FineWeb, all matching parquet shards are discovered recursively in sorted order. The loader reads the `text` column and uses the parquet `id` when present. If a row has no `id`, the loader derives a stable hash from the file path, row index, and row metadata.
+
+Records are split by stable hash of `id` into a `99/1` train/validation partition. Documents are tokenized without truncation, joined with EOS separators, and packed into fixed-length windows.
 
 ## Tokenizer Requirements
 
@@ -109,6 +114,7 @@ Then run the smoke test:
 
 ```bash
 python train.py \
+  --dataset dolma \
   --preset tiny_test \
   --device mps \
   --dataset-path .dataset/books-0000.json.gz \
@@ -126,6 +132,7 @@ python train.py \
 
 ```bash
 python train.py \
+  --dataset dolma \
   --preset paper_170m \
   --device cuda \
   --dataset-path .dataset/books-0000.json.gz \
@@ -142,10 +149,32 @@ python train.py \
   --out-dir outputs/paper_170m
 ```
 
+### FineWeb-Edu 350BT sample
+
+```bash
+python train.py \
+  --dataset fineweb \
+  --preset paper_170m \
+  --device cuda \
+  --dataset-path /data/fineweb-edu-350bt \
+  --tokenizer meta-llama/Llama-2-7b-hf \
+  --batch-size 1 \
+  --grad-accum-steps 8 \
+  --lr 1e-4 \
+  --warmup-steps 50 \
+  --weight-decay 0.1 \
+  --max-steps 1000 \
+  --eval-every 50 \
+  --save-every 50 \
+  --wandb \
+  --out-dir outputs/fineweb_350bt
+```
+
 ### Resume from a checkpoint
 
 ```bash
 python train.py \
+  --dataset fineweb \
   --resume outputs/paper_170m/latest.pt \
   --tokenizer meta-llama/Llama-2-7b-hf \
   --device cuda \

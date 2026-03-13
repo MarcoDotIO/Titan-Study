@@ -6,8 +6,11 @@ from .data import (
     StreamingPackedDataset,
     build_split_sequences,
     document_split,
+    iter_dataset_records,
     iter_dolma_records,
+    iter_fineweb_records,
     load_datasets,
+    resolve_fineweb_files,
 )
 from .device import autocast_context, resolve_device, resolve_dtype, use_grad_scaler
 from .model import ModelState, TitansMACLM, TitansOutput
@@ -26,12 +29,15 @@ __all__ = [
     "build_model_config",
     "build_split_sequences",
     "document_split",
+    "iter_dataset_records",
     "iter_dolma_records",
+    "iter_fineweb_records",
     "load_checkpoint",
     "load_datasets",
     "load_tokenizer",
     "resolve_device",
     "resolve_dtype",
+    "resolve_fineweb_files",
     "save_checkpoint",
     "use_grad_scaler",
 ]

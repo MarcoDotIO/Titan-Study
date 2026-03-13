@@ -66,6 +66,7 @@ class StreamingPackedDataset(IterableDataset):
 
     def __init__(
         self,
+        dataset_name: str,
         dataset_path: str | Path,
         tokenizer,
         *,
@@ -74,6 +75,7 @@ class StreamingPackedDataset(IterableDataset):
         max_docs: int | None = None,
         max_sequences: int | None = None,
     ):
+        self._dataset_name = dataset_name
         self._dataset_path = dataset_path
         self._tokenizer = tokenizer
         self._split = split
@@ -86,7 +88,11 @@ class StreamingPackedDataset(IterableDataset):
         buf: list[int] = []
         sequences_yielded = 0
 
-        for record in iter_dolma_records(self._dataset_path, max_docs=self._max_docs):
+        for record in iter_dataset_records(
+            self._dataset_name,
+            self._dataset_path,
+            max_docs=self._max_docs,
+        ):
             if document_split(record.doc_id) != self._split:
                 continue
             encoded = self._tokenizer(record.text, add_special_tokens=False, truncation=False)
@@ -123,6 +129,24 @@ def resolve_dataset_files(dataset_path: str | Path) -> list[Path]:
     if not files:
         raise FileNotFoundError(
             f"Dataset directory does not contain any gzip files: {path}"
+        )
+    return files
+
+
+def resolve_fineweb_files(dataset_path: str | Path) -> list[Path]:
+    path = Path(dataset_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset path does not exist: {path}")
+
+    if path.is_file():
+        if path.suffix != ".parquet":
+            raise ValueError(f"FineWeb files must be parquet files, got: {path}")
+        return [path]
+
+    files = sorted(file_path for file_path in path.rglob("*.parquet") if file_path.is_file())
+    if not files:
+        raise FileNotFoundError(
+            f"Dataset directory does not contain any parquet files: {path}"
         )
     return files
 
@@ -255,6 +279,110 @@ def iter_dolma_records(dataset_path: str | Path, max_docs: int | None = None) ->
             watcher.stop()
 
 
+def _build_fineweb_doc_id(path: Path, row_index: int, row: dict) -> str:
+    existing_id = row.get("id")
+    if existing_id:
+        return str(existing_id)
+
+    fingerprint = "|".join(
+        [
+            str(path),
+            str(row_index),
+            str(row.get("url", "")),
+            str(row.get("dump", "")),
+            str(row.get("file_path", "")),
+            str(row.get("text", ""))[:256],
+        ]
+    )
+    return hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
+
+
+def _iter_one_fineweb_file(path: Path, docs_seen: int, max_docs: int | None) -> Iterator[tuple[DolmaRecord, int]]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "FineWeb support requires pyarrow. Install the project requirements first."
+        ) from exc
+
+    parquet_file = pq.ParquetFile(path)
+    available_columns = set(parquet_file.schema.names)
+    text_column = "text" if "text" in available_columns else None
+    if text_column is None:
+        raise ValueError(f"FineWeb parquet file does not contain a 'text' column: {path}")
+
+    candidate_metadata = (
+        "id",
+        "dump",
+        "url",
+        "file_path",
+        "language",
+        "language_score",
+        "token_count",
+        "score",
+        "source",
+    )
+    selected_columns = [text_column] + [
+        name for name in candidate_metadata if name in available_columns and name != text_column
+    ]
+
+    row_index = 0
+    for batch in parquet_file.iter_batches(batch_size=1024, columns=selected_columns):
+        rows = batch.to_pylist()
+        for row in rows:
+            text = row.get(text_column, "")
+            if not text:
+                row_index += 1
+                continue
+
+            doc_id = _build_fineweb_doc_id(path, row_index, row)
+            source = row.get("dump") or row.get("source") or "fineweb"
+            metadata = {
+                key: value
+                for key, value in row.items()
+                if key not in {text_column, "id", "dump", "source"} and value is not None
+            }
+
+            docs_seen += 1
+            yield DolmaRecord(
+                doc_id=doc_id,
+                text=text,
+                source=str(source),
+                metadata=metadata,
+            ), docs_seen
+            row_index += 1
+            if max_docs is not None and docs_seen >= max_docs:
+                return
+
+
+def iter_fineweb_records(dataset_path: str | Path, max_docs: int | None = None) -> Iterator[DolmaRecord]:
+    dataset_files = resolve_fineweb_files(dataset_path)
+    docs_seen = 0
+
+    for path in dataset_files:
+        try:
+            for record, docs_seen in _iter_one_fineweb_file(path, docs_seen, max_docs):
+                yield record
+                if max_docs is not None and docs_seen >= max_docs:
+                    return
+        except (OSError, ValueError) as exc:
+            print(f"skipping unreadable parquet file {path}: {exc}")
+
+
+def iter_dataset_records(
+    dataset_name: str,
+    dataset_path: str | Path,
+    max_docs: int | None = None,
+) -> Iterator[DolmaRecord]:
+    if dataset_name == "dolma":
+        yield from iter_dolma_records(dataset_path, max_docs=max_docs)
+        return
+    if dataset_name == "fineweb":
+        yield from iter_fineweb_records(dataset_path, max_docs=max_docs)
+        return
+    raise ValueError(f"Unsupported dataset '{dataset_name}'. Expected 'dolma' or 'fineweb'.")
+
+
 
 def document_split(doc_id: str, validation_percent: int = 1) -> str:
     digest = hashlib.sha1(doc_id.encode("utf-8")).hexdigest()
@@ -287,6 +415,7 @@ def pack_tokenized_documents(
 
 
 def build_split_sequences(
+    dataset_name: str,
     dataset_path: str | Path,
     tokenizer,
     *,
@@ -309,7 +438,7 @@ def build_split_sequences(
     train_done = False
     val_done = False
 
-    for record in iter_dolma_records(dataset_path, max_docs=max_docs):
+    for record in iter_dataset_records(dataset_name, dataset_path, max_docs=max_docs):
         split = document_split(record.doc_id)
         if split == "train" and train_done:
             continue
@@ -347,6 +476,7 @@ def build_split_sequences(
 
 
 def load_datasets(
+    dataset_name: str,
     dataset_path: str | Path,
     tokenizer,
     *,
@@ -359,6 +489,7 @@ def load_datasets(
     # Otherwise stream from disk to avoid loading the full dataset into RAM.
     if max_sequences is not None:
         train_sequences, val_sequences = build_split_sequences(
+            dataset_name,
             dataset_path,
             tokenizer,
             seq_len=seq_len,
@@ -369,10 +500,20 @@ def load_datasets(
         return PackedSequenceDataset(train_sequences), PackedSequenceDataset(val_sequences)
 
     train_dataset = StreamingPackedDataset(
-        dataset_path, tokenizer, split="train", seq_len=seq_len, max_docs=max_docs
+        dataset_name,
+        dataset_path,
+        tokenizer,
+        split="train",
+        seq_len=seq_len,
+        max_docs=max_docs,
     )
     val_streaming = StreamingPackedDataset(
-        dataset_path, tokenizer, split="val", seq_len=seq_len, max_docs=max_docs
+        dataset_name,
+        dataset_path,
+        tokenizer,
+        split="val",
+        seq_len=seq_len,
+        max_docs=max_docs,
     )
     # Wrap val in a cache so repeated eval passes don't re-read from disk.
     val_dataset = CachedStreamingDataset(val_streaming, max_sequences=val_cache_sequences)

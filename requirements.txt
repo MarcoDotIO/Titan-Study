@@ -7,3 +7,4 @@ sentencepiece==0.2.1
 pytest==8.4.2
 python-dotenv==1.0.1
 wandb==0.18.7
+pyarrow==19.0.1

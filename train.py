@@ -35,7 +35,8 @@ class EvaluationMetrics:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Titans MAC language model on Dolma.")
+    parser = argparse.ArgumentParser(description="Train a Titans MAC language model on Dolma or FineWeb.")
+    parser.add_argument("--dataset", default="dolma", choices=["dolma", "fineweb"])
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
     parser.add_argument(
         "--dtype",
@@ -45,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-path",
         default=".dataset/books-0000.json.gz",
-        help="Path to a Dolma gzip NDJSON shard or a directory of gzip shards.",
+        help="Path to local Dolma gzip shards or FineWeb parquet shards.",
     )
     parser.add_argument("--tokenizer", default=None, help="Tokenizer path or model id.")
     parser.add_argument("--preset", default="paper_170m", choices=["tiny_test", "paper_170m"])
@@ -200,6 +201,7 @@ def main() -> None:
         )
 
     train_dataset, val_dataset = load_datasets(
+        args.dataset,
         args.dataset_path,
         tokenizer,
         seq_len=model_config.max_seq_len,
