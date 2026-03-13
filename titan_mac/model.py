@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -323,8 +324,34 @@ class TitansMACLM(nn.Module):
         self.blocks = nn.ModuleList([MACBlock(config) for _ in range(config.n_layers)])
         self.final_norm = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        self.apply(self._init_weights)
+        self._init_block_parameters()
         if config.tie_embeddings:
             self.lm_head.weight = self.token_embedding.weight
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.Conv1d):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+
+    def _init_block_parameters(self) -> None:
+        residual_std = 0.02 / math.sqrt(2 * self.config.n_layers)
+        for block in self.blocks:
+            nn.init.normal_(block.persistent_memory, mean=0.0, std=0.02)
+            nn.init.normal_(block.prefix_position, mean=0.0, std=0.02)
+            nn.init.constant_(block.theta_head.bias, -3.0)
+            nn.init.normal_(block.attn_out.weight, mean=0.0, std=residual_std)
+            nn.init.normal_(block.ffn.down.weight, mean=0.0, std=residual_std)
 
     def init_memory_state(
         self,

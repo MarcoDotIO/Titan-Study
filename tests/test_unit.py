@@ -94,6 +94,16 @@ def test_mac_model_forward_backward_stays_finite() -> None:
     assert total_grad > 0.0
 
 
+def test_mac_model_initial_loss_is_reasonably_scaled() -> None:
+    torch.manual_seed(0)
+    config = build_model_config("tiny_test", vocab_size=128)
+    model = TitansMACLM(config)
+    batch = torch.randint(0, config.vocab_size, (2, 64), dtype=torch.long)
+    output = model(batch, labels=batch, reset_memory=True)
+    assert output.loss is not None
+    assert output.loss.item() < 15.0
+
+
 def test_mac_init_state_fast_params_require_grad() -> None:
     config = build_model_config("tiny_test", vocab_size=128)
     model = TitansMACLM(config)
