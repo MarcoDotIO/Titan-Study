@@ -106,7 +106,7 @@ class GatedFeedForward(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         activated = F.silu(self.up(x))
-        gated = torch.sigmoid(self.gate(x))
+        gated = F.silu(self.gate(x))
         return self.down(activated * gated)
 
 
@@ -137,6 +137,7 @@ class MACBlock(nn.Module):
         self.alpha_head = nn.Linear(config.d_model, 1)
         self.eta_head = nn.Linear(config.d_model, 1)
         self.theta_head = nn.Linear(config.d_model, 1)
+        nn.init.constant_(self.theta_head.bias, -3.0)
 
         memory_dims = [config.d_model]
         for _ in range(config.memory_depth - 1):
@@ -155,10 +156,10 @@ class MACBlock(nn.Module):
         momentum_weights = []
         momentum_biases = []
         for layer in self.memory_layers:
-            layer_weight = layer.weight.to(device=device, dtype=dtype).unsqueeze(0).expand(
+            layer_weight = (layer.weight * 0.01).to(device=device, dtype=dtype).unsqueeze(0).expand(
                 batch_size, -1, -1
             )
-            layer_bias = layer.bias.to(device=device, dtype=dtype).unsqueeze(0).expand(
+            layer_bias = torch.zeros_like(layer.bias).to(device=device, dtype=dtype).unsqueeze(0).expand(
                 batch_size, -1
             )
             weights.append(layer_weight)

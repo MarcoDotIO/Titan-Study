@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from dotenv import load_dotenv
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 
 from titan_mac.checkpoint import (
@@ -53,9 +53,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--segment-len", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=4e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--warmup-steps", type=int, default=100, help="Linear LR warmup steps before cosine decay.")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Max gradient norm (0 to disable).")
     parser.add_argument("--eval-every", type=int, default=10)
     parser.add_argument("--eval-batches", type=int, default=50, help="Max batches per eval pass (0 = unlimited).")
@@ -222,7 +223,11 @@ def main() -> None:
     model = TitansMACLM(model_config).to(device)
     model = maybe_compile(model, args.compile, device)
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = CosineAnnealingLR(optimizer, T_max=max(args.max_steps, 1))
+    warmup_steps = min(args.warmup_steps, args.max_steps)
+    cosine_steps = max(args.max_steps - warmup_steps, 1)
+    warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_steps)
+    cosine = CosineAnnealingLR(optimizer, T_max=cosine_steps)
+    scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps])
     scaler = (
         torch.cuda.amp.GradScaler(enabled=True)
         if use_grad_scaler(device, dtype)
