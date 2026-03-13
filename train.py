@@ -279,9 +279,15 @@ def main() -> None:
 
             if scaler is not None:
                 scaler.unscale_(optimizer)
+            grad_norm_post_clip = None
             if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
-            grad_norm = gradient_l2_norm(unwrap_model(model))
+                grad_norm = float(
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
+                )
+                grad_norm_post_clip = gradient_l2_norm(unwrap_model(model))
+            else:
+                grad_norm = gradient_l2_norm(unwrap_model(model))
+                grad_norm_post_clip = grad_norm
 
             if scaler is not None:
                 scaler.step(optimizer)
@@ -312,6 +318,7 @@ def main() -> None:
                 f"accuracy={train_accuracy:.4f} "
                 f"lr={learning_rate:.6f} "
                 f"grad_norm={grad_norm:.4f} "
+                f"post_clip_grad_norm={grad_norm_post_clip:.4f} "
                 f"tokens_per_sec={tokens_per_sec:.2f}"
             )
             started = time.time()
@@ -321,6 +328,7 @@ def main() -> None:
                 "train/accuracy": train_accuracy,
                 "train/learning_rate": learning_rate,
                 "train/grad_norm": grad_norm,
+                "train/post_clip_grad_norm": grad_norm_post_clip,
                 "train/tokens_per_sec": tokens_per_sec,
             }
             if epoch is not None:

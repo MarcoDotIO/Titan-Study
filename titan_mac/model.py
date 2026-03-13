@@ -106,7 +106,7 @@ class GatedFeedForward(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         activated = F.silu(self.up(x))
-        gated = F.silu(self.gate(x))
+        gated = torch.sigmoid(self.gate(x))
         return self.down(activated * gated)
 
 

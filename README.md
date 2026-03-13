@@ -132,7 +132,8 @@ python train.py \
   --tokenizer meta-llama/Llama-2-7b-hf \
   --batch-size 1 \
   --grad-accum-steps 8 \
-  --lr 4e-4 \
+  --lr 1e-4 \
+  --warmup-steps 50 \
   --weight-decay 0.1 \
   --max-steps 1000 \
   --eval-every 50 \
