@@ -247,8 +247,8 @@ class MACBlock(nn.Module):
         )
 
         # Clip inner gradients to prevent fast-weight explosion.
-        grad_tensors = torch.stack([g.norm() for g in grads])
-        total_norm = grad_tensors.norm()
+        # Compute global norm across all grad tensors, then scale uniformly.
+        total_norm = torch.sqrt(sum(g.pow(2).sum() for g in grads))
         clip_coef = (1.0 / (total_norm + 1e-6)).clamp(max=1.0)
         grads = tuple(g * clip_coef for g in grads)
 
