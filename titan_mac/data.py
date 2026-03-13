@@ -33,6 +33,34 @@ class PackedSequenceDataset(Dataset):
         return self._sequences[index]
 
 
+class CachedStreamingDataset(Dataset):
+    """Wraps a StreamingPackedDataset, materializing up to `max_sequences` entries on
+    first iteration and serving them from memory on all subsequent calls.
+    Avoids re-reading and re-tokenizing files on every eval pass."""
+
+    def __init__(self, streaming: "StreamingPackedDataset", max_sequences: int):
+        self._streaming = streaming
+        self._max_sequences = max_sequences
+        self._cache: list[torch.Tensor] | None = None
+
+    def _ensure_cache(self) -> None:
+        if self._cache is not None:
+            return
+        self._cache = []
+        for seq in self._streaming:
+            self._cache.append(seq)
+            if len(self._cache) >= self._max_sequences:
+                break
+
+    def __len__(self) -> int:
+        self._ensure_cache()
+        return len(self._cache)  # type: ignore[arg-type]
+
+    def __getitem__(self, index: int) -> torch.Tensor:
+        self._ensure_cache()
+        return self._cache[index]  # type: ignore[index]
+
+
 class StreamingPackedDataset(IterableDataset):
     """Streams sequences from disk, tokenizing on the fly. Never loads the full dataset into RAM."""
 
@@ -325,7 +353,8 @@ def load_datasets(
     seq_len: int,
     max_docs: int | None = None,
     max_sequences: int | None = None,
-) -> tuple[StreamingPackedDataset | PackedSequenceDataset, StreamingPackedDataset | PackedSequenceDataset]:
+    val_cache_sequences: int = 500,
+) -> tuple[StreamingPackedDataset | PackedSequenceDataset, CachedStreamingDataset | PackedSequenceDataset]:
     # If max_sequences is set, the dataset is small enough to load eagerly (original behaviour).
     # Otherwise stream from disk to avoid loading the full dataset into RAM.
     if max_sequences is not None:
@@ -342,7 +371,9 @@ def load_datasets(
     train_dataset = StreamingPackedDataset(
         dataset_path, tokenizer, split="train", seq_len=seq_len, max_docs=max_docs
     )
-    val_dataset = StreamingPackedDataset(
+    val_streaming = StreamingPackedDataset(
         dataset_path, tokenizer, split="val", seq_len=seq_len, max_docs=max_docs
     )
+    # Wrap val in a cache so repeated eval passes don't re-read from disk.
+    val_dataset = CachedStreamingDataset(val_streaming, max_sequences=val_cache_sequences)
     return train_dataset, val_dataset

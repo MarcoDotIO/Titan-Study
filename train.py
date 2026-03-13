@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Max gradient norm (0 to disable).")
     parser.add_argument("--eval-every", type=int, default=10)
+    parser.add_argument("--eval-batches", type=int, default=50, help="Max batches per eval pass (0 = unlimited).")
     parser.add_argument("--save-every", type=int, default=10)
     parser.add_argument("--out-dir", default="outputs")
     parser.add_argument("--resume", default=None, help="Checkpoint to resume from.")
@@ -130,7 +131,7 @@ def maybe_init_wandb(
     return run
 
 
-def evaluate(model: TitansMACLM, loader: DataLoader | None, device: torch.device) -> EvaluationMetrics | None:
+def evaluate(model: TitansMACLM, loader: DataLoader | None, device: torch.device, max_batches: int = 0) -> EvaluationMetrics | None:
     if loader is None:
         return None
 
@@ -140,7 +141,9 @@ def evaluate(model: TitansMACLM, loader: DataLoader | None, device: torch.device
     total_correct = 0
     total_tokens = 0
     with torch.enable_grad():
-        for batch in loader:
+        for i, batch in enumerate(loader):
+            if max_batches > 0 and i >= max_batches:
+                break
             batch = batch.to(device)
             output = model(batch, labels=batch, reset_memory=True)
             if output.loss is not None:
@@ -321,7 +324,7 @@ def main() -> None:
                 wandb_metrics["train/epoch_iteration"] = epoch_iteration
 
             if args.eval_every > 0 and finished_step % args.eval_every == 0:
-                eval_metrics = evaluate(model, val_loader, device)
+                eval_metrics = evaluate(model, val_loader, device, max_batches=args.eval_batches)
                 if eval_metrics is None:
                     print("eval=skipped reason=no_validation_sequences")
                 else:

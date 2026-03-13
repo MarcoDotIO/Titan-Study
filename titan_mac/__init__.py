@@ -1,6 +1,7 @@
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import MODEL_PRESETS, ModelConfig, build_model_config
 from .data import (
+    CachedStreamingDataset,
     PackedSequenceDataset,
     StreamingPackedDataset,
     build_split_sequences,
@@ -16,6 +17,7 @@ __all__ = [
     "MODEL_PRESETS",
     "ModelConfig",
     "ModelState",
+    "CachedStreamingDataset",
     "PackedSequenceDataset",
     "StreamingPackedDataset",
     "TitansMACLM",
